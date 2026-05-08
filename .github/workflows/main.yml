@@ -1,511 +1,56 @@
-name: 🐧 Build UTM — Linux + Windows on iPhone (Offline)
+name: Build Linux IPA (iSH-like)
 
 on:
-push:
-branches: [ main ]
-workflow_dispatch:
-inputs:
-utm_version:
-description: ‘UTM Version (leave blank = latest)’
-required: false
-default: ‘’
-
-# ──────────────────────────────────────────────────────────────
-
-# WHAT THIS BUILDS:
-
-# UTM — QEMU-based VM app for iPhone
-
-# ✅ Run Alpine / Ubuntu / Debian Linux OFFLINE
-
-# ✅ Run Windows XP/7/10 (light apps, no GPU games)
-
-# ✅ Wine/CrossOver style Windows API translation
-
-# ✅ Sideloadable via TrollStore or AltStore
-
-# ✅ No cloud needed — 100% on-device
-
-# ──────────────────────────────────────────────────────────────
-
-env:
-REPO:         utmapp/UTM
-SCHEME:       UTM
-CONFIGURATION: Release
-BUILD_DIR:    ${{ github.workspace }}/build
+  workflow_dispatch:  # ম্যানুয়ালি রান করতে
+  push:
+    branches: [ main ]
 
 jobs:
-
-# ════════════════════════════════════════════════════════════
-
-# JOB 1 — Get latest UTM version number
-
-# ════════════════════════════════════════════════════════════
-
-get-version:
-name: 🔍 Resolve UTM Version
-runs-on: ubuntu-latest
-outputs:
-version: ${{ steps.ver.outputs.version }}
-tag:     ${{ steps.ver.outputs.tag }}
-steps:
-- name: Fetch latest release tag
-id: ver
-run: |
-INPUT=”${{ github.event.inputs.utm_version }}”
-if [ -n “$INPUT” ]; then
-TAG=“v${INPUT}”
-else
-TAG=$(curl -s https://api.github.com/repos/utmapp/UTM/releases/latest   
-| python3 -c “import sys,json; print(json.load(sys.stdin)[‘tag_name’])”)
-fi
-VER=”${TAG#v}”
-echo “tag=$TAG”     >> $GITHUB_OUTPUT
-echo “version=$VER” >> $GITHUB_OUTPUT
-echo “✅ UTM version: $VER (tag: $TAG)”
-
-# ════════════════════════════════════════════════════════════
-
-# JOB 2 — Build UTM from Source on macOS
-
-# ════════════════════════════════════════════════════════════
-
-build-utm:
-name: 🔨 Build UTM IPA (macOS + Xcode)
-runs-on: macos-14
-needs: get-version
-timeout-minutes: 120
-
-```
-steps:
-
-  # ── 1. Xcode setup ────────────────────────────────────
-  - name: 🛠 Select Latest Xcode
-    run: |
-      XCODE=$(ls /Applications | grep "^Xcode" | sort -V | tail -1)
-      sudo xcode-select -s "/Applications/$XCODE/Contents/Developer"
-      echo "Xcode: $(xcodebuild -version | head -1)"
-      echo "Swift: $(swift --version | head -1)"
-
-  # ── 2. Install system deps ─────────────────────────────
-  - name: 📦 Install Dependencies (cmake, ninja, meson)
-    run: |
-      brew install cmake ninja meson python3 pkg-config \
-                   glib pixman libpng jpeg-turbo \
-           2>&1 | tail -20
-      pip3 install --quiet tomli 2>/dev/null || true
-      echo "✅ Dependencies installed"
-
-  # ── 3. Clone UTM with ALL submodules ──────────────────
-  - name: 📥 Clone UTM Source (full, with submodules)
-    run: |
-      git clone --depth=1 --branch ${{ needs.get-version.outputs.tag }} \
-          --recurse-submodules --shallow-submodules \
-          https://github.com/utmapp/UTM.git utm_src
-      cd utm_src
-      echo "✅ UTM ${{ needs.get-version.outputs.version }} cloned"
-      echo "Submodules:"
-      git submodule status --recursive | head -20
-
-  # ── 4. Build QEMU (the heart of UTM) ──────────────────
-  - name: ⚙️ Build QEMU for iOS (arm64)
-    working-directory: utm_src
-    run: |
-      # UTM provides its own QEMU build script
-      if [ -f "scripts/build_dependencies.py" ]; then
-        echo "Using UTM's dependency builder..."
-        python3 scripts/build_dependencies.py -p ios -a arm64 2>&1 | tail -50
-      elif [ -f "scripts/build_qemu.py" ]; then
-        python3 scripts/build_qemu.py -p ios 2>&1 | tail -50
-      else
-        # Manual QEMU build for iOS
-        echo "Building QEMU manually..."
-        cd qemu
-        mkdir -p build_ios && cd build_ios
-        ../configure \
-          --target-list=aarch64-softmmu,x86_64-softmmu,i386-softmmu \
-          --enable-hvf \
-          --disable-cocoa \
-          --disable-gtk \
-          --disable-sdl \
-          --disable-vnc \
-          --disable-docs \
-          --disable-debug-info \
-          --enable-lto \
-          --cross-prefix="" \
-          --cpu=aarch64 \
-          --host-cc="clang" \
-          --cc="clang -arch arm64 -isysroot $(xcrun --sdk iphoneos --show-sdk-path) -mios-version-min=16.0" \
-          2>&1 | tail -30
-        make -j$(sysctl -n hw.ncpu) 2>&1 | tail -30
-      fi
-      echo "✅ QEMU build step complete"
-
-  # ── 5. Build UTM via xcodebuild ───────────────────────
-  - name: 🏗️ Build UTM.app (xcodebuild)
-    working-directory: utm_src
-    run: |
-      mkdir -p "$BUILD_DIR"
-
-      # Find the right project file
-      PROJ=$(find . -maxdepth 2 -name "*.xcodeproj" | head -1)
-      WS=$(find . -maxdepth 2 -name "*.xcworkspace" | head -1)
-
-      echo "Project: $PROJ"
-      echo "Workspace: $WS"
-
-      BUILD_CMD="xcodebuild"
-      if [ -n "$WS" ]; then
-        BUILD_CMD="$BUILD_CMD -workspace $WS"
-      else
-        BUILD_CMD="$BUILD_CMD -project $PROJ"
-      fi
-
-      # List available schemes
-      eval "$BUILD_CMD -list 2>/dev/null | head -30" || true
-
-      # Determine scheme
-      SCHEME=$(eval "$BUILD_CMD -list 2>/dev/null" \
-        | grep -E "^\s+(UTM|iLinux|App)" \
-        | head -1 | xargs || echo "UTM")
-      echo "Using scheme: $SCHEME"
-
-      eval "$BUILD_CMD \
-        -scheme \"$SCHEME\" \
-        -configuration Release \
-        -sdk iphoneos \
-        -destination 'generic/platform=iOS' \
-        CONFIGURATION_BUILD_DIR=\"$BUILD_DIR\" \
-        CODE_SIGN_IDENTITY='' \
-        CODE_SIGNING_REQUIRED=NO \
-        CODE_SIGNING_ALLOWED=NO \
-        CODE_SIGN_ENTITLEMENTS='' \
-        DEVELOPMENT_TEAM='' \
-        ENABLE_BITCODE=NO \
-        ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=YES \
-        build" \
-        2>&1 | grep -E "(error:|Build|Compil|Link|FAILED|SUCCEED)" \
-        | grep -v "^$" | tail -60
-
-  # ── 6. Fallback: Download official pre-built IPA ──────
-  - name: 📥 Fallback — Download Official UTM IPA
-    if: failure()
-    run: |
-      echo "⚠️ Source build failed — downloading official UTM IPA..."
-      TAG="${{ needs.get-version.outputs.tag }}"
-      VER="${{ needs.get-version.outputs.version }}"
-
-      # Try official GitHub release
-      IPA_URL="https://github.com/utmapp/UTM/releases/download/${TAG}/UTM.ipa"
-      echo "Downloading: $IPA_URL"
-      curl -L --retry 5 --retry-delay 5 \
-           -o "$BUILD_DIR/UTM_official.ipa" \
-           "$IPA_URL"
-
-      if [ -f "$BUILD_DIR/UTM_official.ipa" ]; then
-        ls -lh "$BUILD_DIR/UTM_official.ipa"
-        echo "✅ Official IPA downloaded (${VER})"
-        # Mark as fallback
-        touch "$BUILD_DIR/.is_fallback"
-      else
-        echo "❌ Download also failed"
-        exit 1
-      fi
-
-  # ── 7. Package custom IPA ─────────────────────────────
-  - name: 📦 Package IPA for Sideloading
-    run: |
-      mkdir -p /tmp/ipa_work/Payload
-      mkdir -p /tmp/final_ipa
-
-      # Check if we have a built .app or fallback IPA
-      APP=$(find "$BUILD_DIR" -name "*.app" -maxdepth 3 | head -1)
-
-      if [ -n "$APP" ] && [ ! -f "$BUILD_DIR/.is_fallback" ]; then
-        echo "📱 Packaging built app: $APP"
-        cp -r "$APP" /tmp/ipa_work/Payload/
-
-        # Remove signatures for clean sideload
-        find /tmp/ipa_work/Payload -name "_CodeSignature" -type d \
-          | xargs rm -rf 2>/dev/null || true
-        find /tmp/ipa_work/Payload -name "*.dylib" -o -name "*.framework" \
-          | xargs -I{} codesign --remove-signature {} 2>/dev/null || true
-        codesign --remove-signature \
-          /tmp/ipa_work/Payload/*.app 2>/dev/null || true
-
-        cd /tmp/ipa_work
-        zip -r /tmp/final_ipa/UTM-iLinux.ipa Payload/ \
-          -x "*.DS_Store" -x "__MACOSX/*"
-
-      else
-        echo "📱 Using official pre-built IPA"
-        cp "$BUILD_DIR/UTM_official.ipa" /tmp/final_ipa/UTM-iLinux.ipa
-      fi
-
-      ls -lh /tmp/final_ipa/UTM-iLinux.ipa
-      echo "✅ IPA ready"
-
-  # ── 8. Inject Linux VM config ─────────────────────────
-  - name: 🐧 Generate Alpine Linux VM Config
-    run: |
-      # Create a ready-to-use Alpine Linux VM config
-      # Users import this into UTM after install
-      mkdir -p /tmp/vm_configs/Alpine-Linux.utm
-      cat > /tmp/vm_configs/Alpine-Linux.utm/config.plist << 'PLIST'
-      <?xml version="1.0" encoding="UTF-8"?>
-      <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-          "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-      <plist version="1.0">
-      <dict>
-        <key>ConfigurationVersion</key><integer>4</integer>
-        <key>Information</key>
-        <dict>
-          <key>Name</key><string>Alpine Linux 3.19</string>
-          <key>Notes</key>
-          <string>Alpine Linux ARM64 — lightweight, fast.
-      Install packages: apk add nano git python3 curl
-      Install Wine: apk add wine (community repo)</string>
-        </dict>
-        <key>System</key>
-        <dict>
-          <key>Architecture</key><string>aarch64</string>
-          <key>CPU</key><string>cortex-a72</string>
-          <key>CPUCount</key><integer>4</integer>
-          <key>MemorySize</key><integer>2048</integer>
-          <key>JitCacheSize</key><integer>128</integer>
-        </dict>
-        <key>Display</key>
-        <dict>
-          <key>ConsoleOnly</key><true/>
-          <key>ConsoleFont</key><string>MenloRegular</string>
-          <key>ConsoleFontSize</key><integer>13</integer>
-          <key>ConsoleTheme</key><string>GreenOnBlack</string>
-        </dict>
-        <key>Input</key>
-        <dict>
-          <key>UsbBusSupport</key><false/>
-        </dict>
-        <key>Sharing</key>
-        <dict>
-          <key>ClipboardSharing</key><true/>
-          <key>DirectorySharing</key><true/>
-        </dict>
-        <key>Boot</key>
-        <dict>
-          <key>BootOrder</key>
-          <array>
-            <dict>
-              <key>Identifier</key><string>disk</string>
-            </dict>
-          </array>
-        </dict>
-        <key>Drives</key>
-        <array>
-          <dict>
-            <key>Identifier</key><string>disk</string>
-            <key>Interface</key><string>virtio-blk-pci</string>
-            <key>ImageType</key><string>disk</string>
-            <key>SizeMB</key><integer>8192</integer>
-          </dict>
-        </array>
-        <key>Networks</key>
-        <array>
-          <dict>
-            <key>Mode</key><string>shared</string>
-            <key>Hardware</key><string>virtio-net-pci</string>
-          </dict>
-        </array>
-      </dict>
-      </plist>
-      PLIST
-
-      # Windows XP VM config (for legacy software)
-      mkdir -p /tmp/vm_configs/Windows-XP.utm
-      cat > /tmp/vm_configs/Windows-XP.utm/config.plist << 'PLIST'
-      <?xml version="1.0" encoding="UTF-8"?>
-      <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-          "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-      <plist version="1.0">
-      <dict>
-        <key>ConfigurationVersion</key><integer>4</integer>
-        <key>Information</key>
-        <dict>
-          <key>Name</key><string>Windows XP (Legacy Apps)</string>
-          <key>Notes</key>
-          <string>Windows XP x86 emulation via QEMU.
-      For running legacy Windows software on iPhone.
-      Requires Windows XP ISO from your own licensed copy.</string>
-        </dict>
-        <key>System</key>
-        <dict>
-          <key>Architecture</key><string>i386</string>
-          <key>CPU</key><string>pentium3</string>
-          <key>CPUCount</key><integer>1</integer>
-          <key>MemorySize</key><integer>512</integer>
-          <key>JitCacheSize</key><integer>64</integer>
-        </dict>
-        <key>Display</key>
-        <dict>
-          <key>ConsoleOnly</key><false/>
-          <key>UpscalerMode</key><string>linear</string>
-        </dict>
-        <key>Networks</key>
-        <array>
-          <dict>
-            <key>Mode</key><string>shared</string>
-            <key>Hardware</key><string>rtl8139</string>
-          </dict>
-        </array>
-      </dict>
-      </plist>
-      PLIST
-
-      # Zip all VM configs together
-      cd /tmp
-      zip -r /tmp/final_ipa/UTM-VM-Configs.zip vm_configs/
-      echo "✅ VM configs generated"
-
-  # ── 9. Generate install guide ─────────────────────────
-  - name: 📋 Generate Install Guide
-    run: |
-      cat > /tmp/final_ipa/INSTALL_GUIDE.md << 'MD'
-      # 🐧 iLinux via UTM — Install Guide
-      ## Version: ${{ needs.get-version.outputs.version }}
-
-      ## ── Step 1: Install UTM IPA ──────────────────────
-
-      ### Option A: TrollStore (Best — Permanent, JIT enabled)
-      1. Open TrollStore on your iPhone
-      2. Tap `+` → Import `UTM-iLinux.ipa`
-      3. Install → Done ✅
-
-      ### Option B: AltStore
-      1. Open AltStore on your iPhone
-      2. `My Apps` → `+` → Select `UTM-iLinux.ipa`
-      3. Install (resign every 7 days)
-
-      ### Option C: Sideloadly (PC দরকার)
-      1. PC তে Sideloadly খুলুন
-      2. iPhone connect করুন
-      3. IPA drag করুন → Apple ID দিন → Start
-
-      ---
-
-      ## ── Step 2: Setup Linux VM ───────────────────────
-
-      1. Download Alpine Linux ISO:
-         https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/aarch64/alpine-standard-3.19.1-aarch64.iso
-
-      2. Import `UTM-VM-Configs.zip` → Extract করুন
-
-      3. UTM খুলুন → `+` → Import `.utm` file
-
-      4. Drive এ ISO attach করুন → Play ▶
-
-      5. Alpine boot হবে → Login: `root` (no password)
-
-      6. Setup run করুন:
-         ```sh
-         setup-alpine
-         ```
-
-      ---
-
-      ## ── Step 3: Windows Software চালান ─────────────
-
-      Alpine Linux এ Wine install করুন:
-      ```sh
-      # Community repo enable
-      echo "https://dl-cdn.alpinelinux.org/alpine/v3.19/community" \
-        >> /etc/apk/repositories
-      apk update
-
-      # Wine install
-      apk add wine winetricks xvfb
-
-      # Windows .exe চালান
-      wine program.exe
-      ```
-
-      ---
-
-      ## ── Supported ─────────────────────────────────────
-
-      | Software | Status |
-      |----------|--------|
-      | Alpine Linux | ✅ Full support |
-      | Ubuntu 22.04 ARM | ✅ Works |
-      | Debian 12 | ✅ Works |
-      | Windows XP (x86) | ✅ Light apps |
-      | Windows 7 (x86) | ⚠️ Slow |
-      | Windows 10 | ⚠️ Very slow, 4GB+ RAM |
-      | 3D Games (Proton) | ❌ No GPU pass-through |
-      | Old 2D Games (Wine) | ✅ Many work |
-      | Office apps | ✅ LibreOffice on Linux |
-
-      ---
-
-      ## ── JIT Enable করুন (Speed 10x বাড়ে) ───────────
-
-      **TrollStore users:** Automatic ✅
-
-      **AltStore users:**
-      1. Settings → Privacy → Developer Mode → ON
-      2. AltStore → Enable JIT → UTM select করুন
-
-      ---
-
-      Built with ❤️ via GitHub Actions
-      MD
-
-      echo "✅ Install guide created"
-      ls -lh /tmp/final_ipa/
-
-  # ── 10. Upload all artifacts ──────────────────────────
-  - name: 📤 Upload UTM IPA
-    uses: actions/upload-artifact@v4
-    with:
-      name: UTM-iLinux-IPA-v${{ needs.get-version.outputs.version }}
-      path: /tmp/final_ipa/UTM-iLinux.ipa
-      retention-days: 30
-      if-no-files-found: error
-
-  - name: 📤 Upload VM Configs
-    uses: actions/upload-artifact@v4
-    with:
-      name: UTM-VM-Configs
-      path: /tmp/final_ipa/UTM-VM-Configs.zip
-      retention-days: 30
-
-  - name: 📤 Upload Install Guide
-    uses: actions/upload-artifact@v4
-    with:
-      name: Install-Guide
-      path: /tmp/final_ipa/INSTALL_GUIDE.md
-      retention-days: 30
-
-  # ── 11. Summary ───────────────────────────────────────
-  - name: 📊 Final Summary
-    if: always()
-    run: |
-      echo "## 🐧 UTM iLinux Build" >> $GITHUB_STEP_SUMMARY
-      echo "" >> $GITHUB_STEP_SUMMARY
-      echo "| | |" >> $GITHUB_STEP_SUMMARY
-      echo "|---|---|" >> $GITHUB_STEP_SUMMARY
-      echo "| UTM Version | ${{ needs.get-version.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
-      echo "| QEMU Targets | x86, x86_64, ARM64, RISC-V |" >> $GITHUB_STEP_SUMMARY
-      echo "| Linux Support | Alpine, Ubuntu, Debian |" >> $GITHUB_STEP_SUMMARY
-      echo "| Windows Support | XP, 7, 10 (via QEMU x86) |" >> $GITHUB_STEP_SUMMARY
-      echo "| Wine | Install inside Linux VM |" >> $GITHUB_STEP_SUMMARY
-      echo "| Install Method | TrollStore / AltStore / Sideloadly |" >> $GITHUB_STEP_SUMMARY
-      echo "" >> $GITHUB_STEP_SUMMARY
-      if [ -f /tmp/final_ipa/UTM-iLinux.ipa ]; then
-        SZ=$(du -sh /tmp/final_ipa/UTM-iLinux.ipa | cut -f1)
-        echo "✅ **IPA Size:** $SZ" >> $GITHUB_STEP_SUMMARY
-        echo "" >> $GITHUB_STEP_SUMMARY
-        echo "### 📲 Artifacts Ready:" >> $GITHUB_STEP_SUMMARY
-        echo "- \`UTM-iLinux.ipa\` — Install this" >> $GITHUB_STEP_SUMMARY
-        echo "- \`UTM-VM-Configs.zip\` — Linux & Windows VM configs" >> $GITHUB_STEP_SUMMARY
-        echo "- \`INSTALL_GUIDE.md\` — বাংলা সহ পূর্ণ গাইড" >> $GITHUB_STEP_SUMMARY
-      fi
-```
+  build:
+    runs-on: macos-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive  # iSH-এর জন্য জরুরি
+
+      - name: Setup Xcode
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: '16'  # বা latest
+
+      - name: Install dependencies
+        run: |
+          brew install python3 meson ninja libarchive
+          pip3 install meson
+
+      - name: Prepare Alpine Linux FS (pre-embed or download)
+        run: |
+          # Alpine minirootfs ডাউনলোড + fakefsify (iSH tools)
+          curl -L -o alpine.tar.gz https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86/alpine-minirootfs-3.20.0-x86.tar.gz
+          # iSH tools দিয়ে প্রসেস করো (তোমার repo-এ tools/fakefsify আছে)
+          cd tools && ./fakefsify ../alpine.tar.gz ../alpine_fs || echo "FS prepare করো"
+
+      - name: Build iSH
+        run: |
+          # Xcode build
+          xcodebuild clean archive \
+            -project iSH.xcodeproj \
+            -scheme iSH \
+            -archivePath $RUNNER_TEMP/iSH.xcarchive \
+            -sdk iphoneos \
+            -configuration Release \
+            CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO
+
+      - name: Export IPA
+        run: |
+          xcodebuild -exportArchive \
+            -archivePath $RUNNER_TEMP/iSH.xcarchive \
+            -exportOptionsPlist ./ExportOptions.plist \
+            -exportPath $RUNNER_TEMP/build
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: Linux-IPA
+          path: ${{ runner.temp }}/build/*.ipa
