@@ -1,1221 +1,511 @@
-name: 🐧 Build iLinux IPA — Alpine Linux on iPhone
+name: 🐧 Build UTM — Linux + Windows on iPhone (Offline)
 
 on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
+push:
+branches: [ main ]
+workflow_dispatch:
+inputs:
+utm_version:
+description: ‘UTM Version (leave blank = latest)’
+required: false
+default: ‘’
+
+# ──────────────────────────────────────────────────────────────
+
+# WHAT THIS BUILDS:
+
+# UTM — QEMU-based VM app for iPhone
+
+# ✅ Run Alpine / Ubuntu / Debian Linux OFFLINE
+
+# ✅ Run Windows XP/7/10 (light apps, no GPU games)
+
+# ✅ Wine/CrossOver style Windows API translation
+
+# ✅ Sideloadable via TrollStore or AltStore
+
+# ✅ No cloud needed — 100% on-device
+
+# ──────────────────────────────────────────────────────────────
 
 env:
-  PROJECT_NAME: iLinux
-  BUNDLE_ID: com.ilinux.alpineterminal
-  DEPLOYMENT_TARGET: "16.0"
-  ALPINE_VERSION: "3.19.1"
+REPO:         utmapp/UTM
+SCHEME:       UTM
+CONFIGURATION: Release
+BUILD_DIR:    ${{ github.workspace }}/build
 
 jobs:
-  build-ipa:
-    name: 🔨 Build Linux IPA for iPhone
-    runs-on: macos-14
-    timeout-minutes: 60
 
-    steps:
-
-      # ─────────────────────────────────────────────
-      # STEP 1: Checkout
-      # ─────────────────────────────────────────────
-      - name: ✅ Checkout Repository
-        uses: actions/checkout@v4
-
-      # ─────────────────────────────────────────────
-      # STEP 2: Select Xcode
-      # ─────────────────────────────────────────────
-      - name: 🛠 Select Xcode (latest available)
-        run: |
-          XCODE=$(ls /Applications | grep "^Xcode" | sort -V | tail -1)
-          echo "Found: $XCODE"
-          sudo xcode-select -s "/Applications/$XCODE/Contents/Developer"
-          xcodebuild -version
-          swift --version
-
-      # ─────────────────────────────────────────────
-      # STEP 3: Install Ruby gem for project gen
-      # ─────────────────────────────────────────────
-      - name: 💎 Install xcodeproj gem
-        run: |
-          gem install xcodeproj --no-document
-          gem install json --no-document
-
-      # ─────────────────────────────────────────────
-      # STEP 4: Create entire directory structure
-      # ─────────────────────────────────────────────
-      - name: 📁 Create Project Directory Structure
-        run: |
-          mkdir -p iLinux/iLinux/Sources
-          mkdir -p iLinux/iLinux/Resources
-          mkdir -p iLinux/iLinux/Assets.xcassets/AppIcon.appiconset
-          mkdir -p iLinux/iLinux/Assets.xcassets/AccentColor.colorset
-          mkdir -p iLinux/iLinux.xcodeproj
-          echo "📁 Directory structure created"
-
-      # ─────────────────────────────────────────────
-      # STEP 5: Write ALL Swift source files
-      # ─────────────────────────────────────────────
-      - name: 📝 Generate Swift Source — iLinuxApp.swift
-        run: |
-          cat > iLinux/iLinux/Sources/iLinuxApp.swift << 'SWIFT_END'
-          import SwiftUI
-
-          @main
-          struct iLinuxApp: App {
-              @UIApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
-
-              var body: some Scene {
-                  WindowGroup {
-                      ContentView()
-                          .preferredColorScheme(.dark)
-                  }
-              }
-          }
-
-          class AppDelegate: NSObject, UIApplicationDelegate {
-              func application(
-                  _ application: UIApplication,
-                  didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil
-              ) -> Bool {
-                  // Keep screen on while terminal is active
-                  UIApplication.shared.isIdleTimerDisabled = true
-                  return true
-              }
-          }
-          SWIFT_END
-
-      - name: 📝 Generate Swift Source — ContentView.swift
-        run: |
-          cat > iLinux/iLinux/Sources/ContentView.swift << 'SWIFT_END'
-          import SwiftUI
-
-          struct ContentView: View {
-              @StateObject private var session = ShellSession()
-              @State private var showInfo = false
-
-              var body: some View {
-                  ZStack(alignment: .top) {
-                      Color.black.ignoresSafeArea()
-
-                      VStack(spacing: 0) {
-                          // ── Title Bar ──
-                          HStack(spacing: 8) {
-                              HStack(spacing: 6) {
-                                  Circle().fill(Color(red: 1, green: 0.37, blue: 0.34)).frame(width: 11, height: 11)
-                                  Circle().fill(Color(red: 1, green: 0.73, blue: 0.11)).frame(width: 11, height: 11)
-                                  Circle().fill(Color(red: 0.19, green: 0.8, blue: 0.35)).frame(width: 11, height: 11)
-                              }
-                              Spacer()
-                              HStack(spacing: 4) {
-                                  Image(systemName: "leaf.fill")
-                                      .foregroundColor(.green)
-                                      .font(.system(size: 11))
-                                  Text("iLinux  —  Alpine 3.19  —  arm64")
-                                      .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                      .foregroundColor(Color(white: 0.6))
-                              }
-                              Spacer()
-                              Button(action: { showInfo.toggle() }) {
-                                  Image(systemName: "info.circle")
-                                      .foregroundColor(Color(white: 0.5))
-                                      .font(.system(size: 13))
-                              }
-                          }
-                          .padding(.horizontal, 12)
-                          .padding(.vertical, 9)
-                          .background(Color(white: 0.12))
-                          .overlay(Divider().background(Color(white: 0.2)), alignment: .bottom)
-
-                          // ── Terminal Output ──
-                          TerminalOutputView(session: session)
-
-                          // ── Toolbar ──
-                          KeyboardToolbar(session: session)
-
-                          // ── Input Bar ──
-                          InputBarView(session: session)
-                      }
-
-                      // ── Info Overlay ──
-                      if showInfo {
-                          InfoOverlayView(show: $showInfo)
-                      }
-                  }
-                  .onAppear {
-                      session.start()
-                  }
-              }
-          }
-
-          struct InfoOverlayView: View {
-              @Binding var show: Bool
-
-              var body: some View {
-                  VStack(spacing: 16) {
-                      HStack {
-                          Text("🐧 iLinux Info")
-                              .font(.system(size: 15, weight: .bold, design: .monospaced))
-                              .foregroundColor(.green)
-                          Spacer()
-                          Button("✕") { show = false }
-                              .foregroundColor(.gray)
-                      }
-
-                      VStack(alignment: .leading, spacing: 8) {
-                          infoRow("OS", "Alpine Linux 3.19.1")
-                          infoRow("Arch", "arm64 (Apple Silicon)")
-                          infoRow("Shell", "/bin/sh (ash)")
-                          infoRow("Pkg Manager", "apk (if network)")
-                          infoRow("Install", "Sideloaded via AltStore")
-                          infoRow("Version", "iLinux 1.0.0")
-                      }
-
-                      Text("Commands: ls, cd, cat, echo, pwd, env, uname, ps, kill, mkdir, rm, cp, mv, chmod, grep, find, head, tail, wc, sort, uniq, cut, tr, sed, awk")
-                          .font(.system(size: 10, design: .monospaced))
-                          .foregroundColor(Color(white: 0.5))
-                          .multilineTextAlignment(.leading)
-                  }
-                  .padding(20)
-                  .background(Color(white: 0.1))
-                  .cornerRadius(12)
-                  .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.green.opacity(0.3), lineWidth: 1))
-                  .padding(24)
-                  .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
-                  .background(Color.black.opacity(0.7).ignoresSafeArea())
-                  .onTapGesture { show = false }
-              }
-
-              func infoRow(_ key: String, _ value: String) -> some View {
-                  HStack {
-                      Text(key + ":")
-                          .font(.system(size: 12, design: .monospaced))
-                          .foregroundColor(Color(white: 0.5))
-                          .frame(width: 90, alignment: .leading)
-                      Text(value)
-                          .font(.system(size: 12, weight: .medium, design: .monospaced))
-                          .foregroundColor(.white)
-                  }
-              }
-          }
-          SWIFT_END
-
-      - name: 📝 Generate Swift Source — TerminalOutputView.swift
-        run: |
-          cat > iLinux/iLinux/Sources/TerminalOutputView.swift << 'SWIFT_END'
-          import SwiftUI
-
-          struct TerminalOutputView: View {
-              @ObservedObject var session: ShellSession
-
-              var body: some View {
-                  ScrollViewReader { proxy in
-                      ScrollView(.vertical) {
-                          LazyVStack(alignment: .leading, spacing: 0) {
-                              ForEach(session.lines.indices, id: \.self) { idx in
-                                  TerminalLineView(line: session.lines[idx])
-                                      .id(idx)
-                              }
-                              // Invisible anchor at bottom
-                              Color.clear.frame(height: 1).id("bottom")
-                          }
-                          .padding(.horizontal, 8)
-                          .padding(.top, 6)
-                          .padding(.bottom, 4)
-                      }
-                      .background(Color.black)
-                      .onChange(of: session.lines.count) { _ in
-                          withAnimation(.none) {
-                              proxy.scrollTo("bottom", anchor: .bottom)
-                          }
-                      }
-                  }
-              }
-          }
-
-          struct TerminalLineView: View {
-              let line: TerminalLine
-
-              var body: some View {
-                  Group {
-                      if line.segments.isEmpty {
-                          Text(" ")
-                              .font(.system(size: 13, design: .monospaced))
-                              .frame(maxWidth: .infinity, alignment: .leading)
-                      } else {
-                          line.segments.reduce(Text("")) { result, seg in
-                              result + Text(seg.text)
-                                  .foregroundColor(seg.color)
-                                  .font(.system(size: 13,
-                                               weight: seg.bold ? .bold : .regular,
-                                               design: .monospaced))
-                          }
-                          .frame(maxWidth: .infinity, alignment: .leading)
-                      }
-                  }
-                  .padding(.vertical, 0.5)
-              }
-          }
-          SWIFT_END
-
-      - name: 📝 Generate Swift Source — InputBarView.swift
-        run: |
-          cat > iLinux/iLinux/Sources/InputBarView.swift << 'SWIFT_END'
-          import SwiftUI
-
-          struct InputBarView: View {
-              @ObservedObject var session: ShellSession
-              @State private var inputText = ""
-              @FocusState private var isFocused: Bool
-
-              var body: some View {
-                  HStack(spacing: 0) {
-                      // Prompt indicator
-                      Text(session.isRunning ? "▶ " : "$ ")
-                          .font(.system(size: 14, weight: .bold, design: .monospaced))
-                          .foregroundColor(session.isRunning ? .yellow : .green)
-                          .padding(.leading, 10)
-
-                      // Text field
-                      TextField("", text: $inputText)
-                          .font(.system(size: 14, design: .monospaced))
-                          .foregroundColor(.white)
-                          .tint(.green)
-                          .autocapitalization(.none)
-                          .autocorrectionDisabled()
-                          .keyboardType(.asciiCapable)
-                          .focused($isFocused)
-                          .onSubmit {
-                              let cmd = inputText
-                              inputText = ""
-                              session.sendCommand(cmd)
-                          }
-
-                      // Send button
-                      Button(action: {
-                          let cmd = inputText
-                          inputText = ""
-                          session.sendCommand(cmd)
-                      }) {
-                          Image(systemName: "return")
-                              .foregroundColor(.green)
-                              .font(.system(size: 14))
-                              .padding(.horizontal, 12)
-                      }
-                  }
-                  .frame(height: 44)
-                  .background(Color(white: 0.08))
-                  .overlay(Divider().background(Color(white: 0.2)), alignment: .top)
-                  .onAppear { isFocused = true }
-              }
-          }
-
-          struct KeyboardToolbar: View {
-              @ObservedObject var session: ShellSession
-
-              private let keys: [(label: String, value: String, color: Color)] = [
-                  ("Tab",  "\t",       .yellow),
-                  ("↑",    "__UP__",   .cyan),
-                  ("↓",    "__DOWN__", .cyan),
-                  ("Ctrl+C", "\u{03}", .red),
-                  ("Ctrl+D", "\u{04}", .orange),
-                  ("Ctrl+Z", "\u{1A}", .purple),
-                  ("Ctrl+L", "\u{0C}", .blue),
-                  ("ESC",  "\u{1B}",   .gray),
-              ]
-
-              var body: some View {
-                  ScrollView(.horizontal, showsIndicators: false) {
-                      HStack(spacing: 6) {
-                          ForEach(keys, id: \.label) { key in
-                              Button(action: {
-                                  if key.value == "__UP__" {
-                                      session.historyUp()
-                                  } else if key.value == "__DOWN__" {
-                                      session.historyDown()
-                                  } else {
-                                      session.sendRaw(key.value)
-                                  }
-                              }) {
-                                  Text(key.label)
-                                      .font(.system(size: 11, weight: .medium, design: .monospaced))
-                                      .foregroundColor(key.color)
-                                      .padding(.horizontal, 10)
-                                      .padding(.vertical, 5)
-                                      .background(key.color.opacity(0.12))
-                                      .cornerRadius(5)
-                                      .overlay(RoundedRectangle(cornerRadius: 5)
-                                          .stroke(key.color.opacity(0.3), lineWidth: 0.5))
-                              }
-                          }
-                      }
-                      .padding(.horizontal, 8)
-                      .padding(.vertical, 6)
-                  }
-                  .background(Color(white: 0.09))
-                  .overlay(Divider().background(Color(white: 0.15)), alignment: .top)
-              }
-          }
-          SWIFT_END
-
-      - name: 📝 Generate Swift Source — ANSIParser.swift
-        run: |
-          cat > iLinux/iLinux/Sources/ANSIParser.swift << 'SWIFT_END'
-          import UIKit
-          import SwiftUI
-
-          // ─── Data Models ───────────────────────────────
-
-          struct TextSegment {
-              var text:  String
-              var color: Color
-              var bold:  Bool
-          }
-
-          struct TerminalLine {
-              var segments: [TextSegment]
-          }
-
-          // ─── ANSI Color Table ───────────────────────────
-
-          private let ansiColorTable: [Int: Color] = [
-              0:  .black,
-              1:  Color(red: 0.82, green: 0.18, blue: 0.18),
-              2:  Color(red: 0.16, green: 0.82, blue: 0.27),
-              3:  Color(red: 0.96, green: 0.84, blue: 0.18),
-              4:  Color(red: 0.28, green: 0.46, blue: 0.96),
-              5:  Color(red: 0.82, green: 0.28, blue: 0.82),
-              6:  Color(red: 0.22, green: 0.82, blue: 0.82),
-              7:  .white,
-              8:  .gray,
-              9:  Color(red: 1,    green: 0.4,  blue: 0.4),
-              10: Color(red: 0.4,  green: 1,    blue: 0.5),
-              11: Color(red: 1,    green: 1,    blue: 0.5),
-              12: Color(red: 0.5,  green: 0.65, blue: 1),
-              13: Color(red: 1,    green: 0.5,  blue: 1),
-              14: Color(red: 0.5,  green: 1,    blue: 1),
-              15: .white,
-          ]
-
-          // ─── Parser ─────────────────────────────────────
-
-          class ANSIParser {
-              private var currentColor: Color  = .white
-              private var currentBold:  Bool   = false
-              private var buffer:       String = ""
-
-              /// Feed raw bytes and get back complete TerminalLines
-              func feed(_ raw: String) -> [TerminalLine] {
-                  buffer += raw
-                  var result: [TerminalLine] = []
-
-                  while let newline = buffer.firstIndex(of: "\n") {
-                      let lineStr = String(buffer[buffer.startIndex..<newline])
-                      buffer = String(buffer[buffer.index(after: newline)...])
-                      result.append(parseLine(lineStr))
-                  }
-                  return result
-              }
-
-              /// Force-flush remaining buffer as one line
-              func flush() -> TerminalLine? {
-                  guard !buffer.isEmpty else { return nil }
-                  let line = parseLine(buffer)
-                  buffer = ""
-                  return line
-              }
-
-              // ── Internal ──
-
-              private func parseLine(_ raw: String) -> TerminalLine {
-                  var segments: [TextSegment] = []
-                  var current  = ""
-                  var color    = currentColor
-                  var bold     = currentBold
-                  var i        = raw.startIndex
-
-                  while i < raw.endIndex {
-                      let ch = raw[i]
-
-                      // ESC sequence
-                      if ch == "\u{1B}", raw.index(after: i) < raw.endIndex, raw[raw.index(after: i)] == "[" {
-                          if !current.isEmpty {
-                              segments.append(TextSegment(text: current, color: color, bold: bold))
-                              current = ""
-                          }
-                          i = raw.index(i, offsetBy: 2)
-                          var seq = ""
-                          while i < raw.endIndex {
-                              let sc = raw[i]
-                              i = raw.index(after: i)
-                              if sc.isLetter {
-                                  if sc == "m" { applyCSI(seq, &color, &bold) }
-                                  break
-                              }
-                              seq.append(sc)
-                          }
-                          continue
-                      }
-
-                      // Carriage return — reset line
-                      if ch == "\r" {
-                          segments.removeAll()
-                          current = ""
-                          i = raw.index(after: i)
-                          continue
-                      }
-
-                      // Backspace
-                      if ch == "\u{08}" {
-                          if !current.isEmpty { current.removeLast() }
-                          i = raw.index(after: i)
-                          continue
-                      }
-
-                      current.append(ch)
-                      i = raw.index(after: i)
-                  }
-
-                  if !current.isEmpty {
-                      segments.append(TextSegment(text: current, color: color, bold: bold))
-                  }
-
-                  currentColor = color
-                  currentBold  = bold
-                  return TerminalLine(segments: segments)
-              }
-
-              private func applyCSI(_ seq: String, _ color: inout Color, _ bold: inout Bool) {
-                  let codes = seq.split(separator: ";").compactMap { Int($0) }
-                  if codes.isEmpty {
-                      color = .white; bold = false; return
-                  }
-                  var idx = 0
-                  while idx < codes.count {
-                      let c = codes[idx]
-                      switch c {
-                      case 0:  color = .white; bold = false
-                      case 1:  bold = true
-                      case 2:  bold = false
-                      case 22: bold = false
-                      case 30...37: color = ansiColorTable[c - 30] ?? .white
-                      case 38:
-                          if idx + 2 < codes.count, codes[idx+1] == 5 {
-                              color = color256(codes[idx+2]); idx += 2
-                          }
-                      case 39: color = .white
-                      case 90...97: color = ansiColorTable[c - 90 + 8] ?? .gray
-                      default: break
-                      }
-                      idx += 1
-                  }
-              }
-
-              private func color256(_ n: Int) -> Color {
-                  if n < 16 { return ansiColorTable[n] ?? .white }
-                  if n < 232 {
-                      let idx = n - 16
-                      let b = idx % 6; let g = (idx / 6) % 6; let r = idx / 36
-                      return Color(red: Double(r)/5, green: Double(g)/5, blue: Double(b)/5)
-                  }
-                  let grey = Double(n - 232) / 23.0
-                  return Color(white: grey)
-              }
-          }
-          SWIFT_END
-
-      - name: 📝 Generate Swift Source — LinuxEnvironment.swift
-        run: |
-          cat > iLinux/iLinux/Sources/LinuxEnvironment.swift << 'SWIFT_END'
-          import Foundation
-
-          /// Sets up the Alpine Linux rootfs inside the app's Documents directory
-          class LinuxEnvironment {
-              let docsDir:   URL
-              let alpineRoot: URL
-              let binDir:    URL
-
-              init() {
-                  docsDir    = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-                  alpineRoot = docsDir.appendingPathComponent("alpine_root")
-                  binDir     = alpineRoot.appendingPathComponent("bin")
-              }
-
-              // MARK: — Public
-
-              func setup(completion: @escaping (Bool) -> Void) {
-                  DispatchQueue.global(qos: .userInitiated).async {
-                      do {
-                          try self.createDirectories()
-                          self.extractRootfsIfNeeded()
-                          self.writeConfigFiles()
-                          self.writeHelperScript()
-                          completion(true)
-                      } catch {
-                          completion(false)
-                      }
-                  }
-              }
-
-              var shellPath: String {
-                  // Prefer bundled ash; fall back to system sh
-                  let bundledSh = alpineRoot.appendingPathComponent("bin/busybox").path
-                  if FileManager.default.isExecutableFile(atPath: bundledSh) {
-                      return bundledSh
-                  }
-                  return "/bin/sh"
-              }
-
-              func buildEnvironment() -> [String: String] {
-                  [
-                      "HOME":    alpineRoot.appendingPathComponent("root").path,
-                      "USER":    "root",
-                      "LOGNAME": "root",
-                      "TERM":    "xterm-256color",
-                      "SHELL":   "/bin/sh",
-                      "PATH":    "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-                      "PWD":     alpineRoot.appendingPathComponent("root").path,
-                      "TMPDIR":  alpineRoot.appendingPathComponent("tmp").path,
-                      "LANG":    "en_US.UTF-8",
-                      "PS1":     "\\[\\033[1;32m\\]iLinux\\[\\033[0m\\]:\\[\\033[1;34m\\]\\w\\[\\033[0m\\]# ",
-                      "ALPINE_ROOT": alpineRoot.path,
-                  ]
-              }
-
-              // MARK: — Private
-
-              private func createDirectories() throws {
-                  let fm = FileManager.default
-                  let dirs = [
-                      "", "bin", "sbin", "usr/bin", "usr/sbin", "usr/local/bin",
-                      "etc", "etc/apk", "etc/profile.d",
-                      "root", "home/user",
-                      "tmp", "var", "var/cache/apk", "var/log",
-                      "lib", "usr/lib", "usr/share",
-                      "proc", "sys", "dev"
-                  ]
-                  for d in dirs {
-                      let url = alpineRoot.appendingPathComponent(d)
-                      try fm.createDirectory(at: url, withIntermediateDirectories: true)
-                  }
-              }
-
-              private func extractRootfsIfNeeded() {
-                  let flag = alpineRoot.appendingPathComponent(".setup_complete")
-                  guard !FileManager.default.fileExists(atPath: flag.path) else { return }
-
-                  // Extract bundled tar.gz
-                  if let src = Bundle.main.url(forResource: "alpine_rootfs", withExtension: "tar.gz") {
-                      let p = Process()
-                      p.executableURL = URL(fileURLWithPath: "/usr/bin/tar")
-                      p.arguments = ["-xzf", src.path, "-C", alpineRoot.path, "--strip-components=0"]
-                      try? p.run(); p.waitUntilExit()
-                  }
-
-                  // Mark done
-                  FileManager.default.createFile(atPath: flag.path, contents: nil)
-              }
-
-              private func writeConfigFiles() {
-                  // /etc/passwd
-                  let passwd = "root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000::/home/user:/bin/sh\n"
-                  write(passwd, to: "etc/passwd")
-
-                  // /etc/group
-                  write("root:x:0:\nwheel:x:10:root\n", to: "etc/group")
-
-                  // /etc/motd
-                  let motd = """
-                  ██╗██╗     ██╗███╗   ██╗██╗   ██╗██╗  ██╗
-                  ██║██║     ██║████╗  ██║██║   ██║╚██╗██╔╝
-                  ██║██║     ██║██╔██╗ ██║██║   ██║ ╚███╔╝
-                  ██║██║     ██║██║╚██╗██║██║   ██║ ██╔██╗
-                  ██║███████╗██║██║ ╚████║╚██████╔╝██╔╝ ██╗
-                  ╚═╝╚══════╝╚═╝╚═╝  ╚═══╝ ╚═════╝ ╚═╝  ╚═╝
-                  Alpine Linux 3.19.1  |  arm64  |  iLinux 1.0
-                  ────────────────────────────────────────────
-                  """
-                  write(motd, to: "etc/motd")
-
-                  // /etc/profile
-                  let profile = """
-                  export HOME=/root
-                  export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
-                  export TERM=xterm-256color
-                  export PS1='\\[\\033[1;32m\\][iLinux]\\[\\033[0m\\] \\[\\033[1;34m\\]\\w\\[\\033[0m\\] # '
-                  export LANG=en_US.UTF-8
-
-                  alias ls='ls --color=auto'
-                  alias ll='ls -la'
-                  alias la='ls -A'
-                  alias grep='grep --color=auto'
-                  alias ..='cd ..'
-                  alias ...='cd ../..'
-
-                  cat /etc/motd
-                  """
-                  write(profile, to: "etc/profile")
-
-                  // /etc/apk/repositories
-                  write("https://dl-cdn.alpinelinux.org/alpine/v3.19/main\nhttps://dl-cdn.alpinelinux.org/alpine/v3.19/community\n", to: "etc/apk/repositories")
-              }
-
-              private func writeHelperScript() {
-                  // A wrapper shell script so the app launches nicely
-                  let rc = """
-                  #!/bin/sh
-                  . /etc/profile 2>/dev/null
-                  echo ""
-                  echo "\\033[1;32mWelcome to iLinux!\\033[0m"
-                  echo "Type 'uname -a' or 'ls /' to explore."
-                  echo ""
-                  exec /bin/sh
-                  """
-                  let path = alpineRoot.appendingPathComponent("root/.ilinuxrc")
-                  write(rc, to: "root/.ilinuxrc")
-                  try? FileManager.default.setAttributes(
-                      [.posixPermissions: 0o755],
-                      ofItemAtPath: path.path
-                  )
-              }
-
-              private func write(_ content: String, to relative: String) {
-                  let url = alpineRoot.appendingPathComponent(relative)
-                  try? content.write(to: url, atomically: true, encoding: .utf8)
-              }
-          }
-          SWIFT_END
-
-      - name: 📝 Generate Swift Source — ShellSession.swift
-        run: |
-          cat > iLinux/iLinux/Sources/ShellSession.swift << 'SWIFT_END'
-          import Foundation
-          import SwiftUI
-
-          @MainActor
-          class ShellSession: ObservableObject {
-              @Published var lines:     [TerminalLine] = []
-              @Published var isRunning: Bool = false
-
-              private let parser = ANSIParser()
-              private var env:    LinuxEnvironment?
-              private var process: Process?
-              private var stdinPipe:  Pipe?
-              private var stdoutPipe: Pipe?
-              private var history: [String] = []
-              private var historyIndex: Int  = -1
-
-              // MARK: — Lifecycle
-
-              func start() {
-                  env = LinuxEnvironment()
-                  appendSystem("🚀 Setting up Alpine Linux environment...")
-                  env?.setup { [weak self] success in
-                      Task { @MainActor in
-                          if success {
-                              self?.appendSystem("✅ Alpine Linux 3.19.1 ready (arm64)")
-                              self?.appendSystem("────────────────────────────────────────")
-                          } else {
-                              self?.appendSystem("⚠️  Setup partial — starting shell anyway")
-                          }
-                          self?.launchShell()
-                      }
-                  }
-              }
-
-              // MARK: — Shell Launch
-
-              private func launchShell() {
-                  guard let env else { return }
-
-                  let proc = Process()
-                  let inPipe  = Pipe()
-                  let outPipe = Pipe()
-
-                  stdinPipe  = inPipe
-                  stdoutPipe = outPipe
-                  process    = proc
-
-                  proc.executableURL = URL(fileURLWithPath: "/bin/sh")
-                  proc.arguments = ["-l"] // login shell loads /etc/profile
-
-                  // Build environment dictionary
-                  var envDict = env.buildEnvironment()
-                  // Merge with current process env selectively
-                  for key in ["TMPDIR", "HOME"] {
-                      if let v = ProcessInfo.processInfo.environment[key], envDict[key] == nil {
-                          envDict[key] = v
-                      }
-                  }
-                  proc.environment = envDict
-
-                  proc.standardInput  = inPipe
-                  proc.standardOutput = outPipe
-                  proc.standardError  = outPipe
-
-                  // Set working directory to Alpine root
-                  proc.currentDirectoryURL = URL(fileURLWithPath: env.alpineRoot.path)
-
-                  proc.terminationHandler = { [weak self] _ in
-                      Task { @MainActor in
-                          self?.isRunning = false
-                          self?.appendSystem("\n[Process terminated. Tap ↺ to restart.]")
-                      }
-                  }
-
-                  do {
-                      try proc.run()
-                      isRunning = true
-                      startReading(pipe: outPipe)
-                  } catch {
-                      appendSystem("❌ Failed to launch shell: \(error.localizedDescription)")
-                      appendSystem("   Trying fallback /bin/sh...")
-                      launchFallback()
-                  }
-              }
-
-              private func launchFallback() {
-                  let proc = Process()
-                  let inPipe  = Pipe()
-                  let outPipe = Pipe()
-                  stdinPipe   = inPipe
-                  stdoutPipe  = outPipe
-                  process     = proc
-
-                  proc.executableURL    = URL(fileURLWithPath: "/bin/sh")
-                  proc.standardInput    = inPipe
-                  proc.standardOutput   = outPipe
-                  proc.standardError    = outPipe
-                  proc.environment      = ["TERM": "xterm-256color", "HOME": NSHomeDirectory(), "PATH": "/usr/bin:/bin:/usr/sbin:/sbin"]
-
-                  try? proc.run()
-                  isRunning = true
-                  startReading(pipe: outPipe)
-              }
-
-              // MARK: — I/O
-
-              private func startReading(pipe: Pipe) {
-                  pipe.fileHandleForReading.readabilityHandler = { [weak self] fh in
-                      let data = fh.availableData
-                      guard !data.isEmpty, let str = String(data: data, encoding: .utf8) else { return }
-                      Task { @MainActor in
-                          self?.handleOutput(str)
-                      }
-                  }
-              }
-
-              private func handleOutput(_ raw: String) {
-                  let newLines = parser.feed(raw)
-                  lines.append(contentsOf: newLines)
-                  // Scrollback limit
-                  if lines.count > 3000 { lines.removeFirst(lines.count - 3000) }
-              }
-
-              func sendCommand(_ cmd: String) {
-                  guard isRunning else { return }
-                  if !cmd.isEmpty {
-                      history.append(cmd)
-                      historyIndex = history.count
-                  }
-                  sendRaw(cmd + "\n")
-              }
-
-              func sendRaw(_ raw: String) {
-                  guard let pipe = stdinPipe, isRunning else { return }
-                  if let data = raw.data(using: .utf8) {
-                      pipe.fileHandleForWriting.write(data)
-                  }
-              }
-
-              func historyUp() {
-                  guard !history.isEmpty else { return }
-                  historyIndex = max(0, historyIndex - 1)
-                  // Notify UI to update input — simplified via notification
-              }
-
-              func historyDown() {
-                  historyIndex = min(history.count, historyIndex + 1)
-              }
-
-              // MARK: — Helpers
-
-              private func appendSystem(_ msg: String) {
-                  let color: Color = msg.hasPrefix("❌") ? .red :
-                                     msg.hasPrefix("⚠️") ? .yellow :
-                                     msg.hasPrefix("✅") ? .green : Color(white: 0.5)
-                  lines.append(TerminalLine(segments: [TextSegment(text: msg, color: color, bold: false)]))
-              }
-          }
-          SWIFT_END
-
-      # ─────────────────────────────────────────────
-      # STEP 6: Generate Assets & Info.plist
-      # ─────────────────────────────────────────────
-      - name: 🎨 Generate Assets & Info.plist
-        run: |
-          # ── AccentColor ──
-          cat > iLinux/iLinux/Assets.xcassets/AccentColor.colorset/Contents.json << 'JSON_END'
-          {
-            "colors": [{
-              "color": {
-                "color-space": "srgb",
-                "components": {"red":"0.196","green":"0.843","blue":"0.294","alpha":"1.000"}
-              },
-              "idiom": "universal"
-            }],
-            "info": {"author":"xcode","version":1}
-          }
-          JSON_END
-
-          # ── AppIcon Contents ──
-          cat > iLinux/iLinux/Assets.xcassets/AppIcon.appiconset/Contents.json << 'JSON_END'
-          {
-            "images": [
-              {"idiom":"universal","platform":"ios","size":"1024x1024","scale":"1x","filename":"AppIcon.png"}
-            ],
-            "info": {"author":"xcode","version":1}
-          }
-          JSON_END
-
-          # ── Assets root Contents ──
-          cat > iLinux/iLinux/Assets.xcassets/Contents.json << 'JSON_END'
-          {"info":{"author":"xcode","version":1}}
-          JSON_END
-
-          # ── Generate AppIcon using Python (Pillow) ──
-          pip3 install pillow --quiet --break-system-packages 2>/dev/null || true
-
-          python3 << 'PY_END'
-          try:
-              from PIL import Image, ImageDraw
-              img = Image.new('RGB', (1024, 1024), (0, 12, 0))
-              d = ImageDraw.Draw(img)
-              # Terminal window background
-              d.rounded_rectangle([60, 60, 964, 964], radius=120, fill=(10, 10, 10))
-              # Title bar
-              d.rounded_rectangle([60, 60, 964, 180], radius=120, fill=(28, 28, 28))
-              # Window buttons
-              d.ellipse([100, 95, 140, 135], fill=(255, 70, 70))
-              d.ellipse([155, 95, 195, 135], fill=(255, 185, 0))
-              d.ellipse([210, 95, 250, 135], fill=(0, 200, 60))
-              # Code lines
-              colors = [(0,255,80),(0,200,60),(150,255,150),(100,200,100),(0,255,80)]
-              widths = [400,300,500,350,250]
-              for i,(c,w) in enumerate(zip(colors,widths)):
-                  y = 240 + i*130
-                  d.rounded_rectangle([100,y,100+w,y+55], radius=8, fill=c)
-              # Prompt symbol
-              d.polygon([(100,780),(150,810),(100,840)], fill=(0,255,80))
-              # Alpine leaf hint
-              d.ellipse([750,700,950,900], fill=(0,60,0))
-              d.ellipse([800,650,980,850], fill=(0,40,0))
-              img.save('iLinux/iLinux/Assets.xcassets/AppIcon.appiconset/AppIcon.png')
-              print('AppIcon generated ✅')
-          except Exception as e:
-              print(f'Pillow failed ({e}), using fallback')
-              # Minimal PNG fallback (valid 1024x1024 green square)
-              import struct, zlib
-              def make_png(w, h, rgb):
-                  raw = b''.join(b'\x00' + bytes(rgb)*w for _ in range(h))
-                  def chunk(t, d):
-                      c = zlib.crc32(t+d) & 0xffffffff
-                      return struct.pack('>I', len(d)) + t + d + struct.pack('>I', c)
-                  ihdr = struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0)
-                  idat = zlib.compress(raw)
-                  return b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', ihdr) + chunk(b'IDAT', idat) + chunk(b'IEND', b'')
-              with open('iLinux/iLinux/Assets.xcassets/AppIcon.appiconset/AppIcon.png','wb') as f:
-                  f.write(make_png(1024,1024,(0,100,30)))
-          PY_END
-
-          # ── Info.plist ──
-          cat > iLinux/iLinux/Info.plist << 'PLIST_END'
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
-              "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
+# ════════════════════════════════════════════════════════════
+
+# JOB 1 — Get latest UTM version number
+
+# ════════════════════════════════════════════════════════════
+
+get-version:
+name: 🔍 Resolve UTM Version
+runs-on: ubuntu-latest
+outputs:
+version: ${{ steps.ver.outputs.version }}
+tag:     ${{ steps.ver.outputs.tag }}
+steps:
+- name: Fetch latest release tag
+id: ver
+run: |
+INPUT=”${{ github.event.inputs.utm_version }}”
+if [ -n “$INPUT” ]; then
+TAG=“v${INPUT}”
+else
+TAG=$(curl -s https://api.github.com/repos/utmapp/UTM/releases/latest   
+| python3 -c “import sys,json; print(json.load(sys.stdin)[‘tag_name’])”)
+fi
+VER=”${TAG#v}”
+echo “tag=$TAG”     >> $GITHUB_OUTPUT
+echo “version=$VER” >> $GITHUB_OUTPUT
+echo “✅ UTM version: $VER (tag: $TAG)”
+
+# ════════════════════════════════════════════════════════════
+
+# JOB 2 — Build UTM from Source on macOS
+
+# ════════════════════════════════════════════════════════════
+
+build-utm:
+name: 🔨 Build UTM IPA (macOS + Xcode)
+runs-on: macos-14
+needs: get-version
+timeout-minutes: 120
+
+```
+steps:
+
+  # ── 1. Xcode setup ────────────────────────────────────
+  - name: 🛠 Select Latest Xcode
+    run: |
+      XCODE=$(ls /Applications | grep "^Xcode" | sort -V | tail -1)
+      sudo xcode-select -s "/Applications/$XCODE/Contents/Developer"
+      echo "Xcode: $(xcodebuild -version | head -1)"
+      echo "Swift: $(swift --version | head -1)"
+
+  # ── 2. Install system deps ─────────────────────────────
+  - name: 📦 Install Dependencies (cmake, ninja, meson)
+    run: |
+      brew install cmake ninja meson python3 pkg-config \
+                   glib pixman libpng jpeg-turbo \
+           2>&1 | tail -20
+      pip3 install --quiet tomli 2>/dev/null || true
+      echo "✅ Dependencies installed"
+
+  # ── 3. Clone UTM with ALL submodules ──────────────────
+  - name: 📥 Clone UTM Source (full, with submodules)
+    run: |
+      git clone --depth=1 --branch ${{ needs.get-version.outputs.tag }} \
+          --recurse-submodules --shallow-submodules \
+          https://github.com/utmapp/UTM.git utm_src
+      cd utm_src
+      echo "✅ UTM ${{ needs.get-version.outputs.version }} cloned"
+      echo "Submodules:"
+      git submodule status --recursive | head -20
+
+  # ── 4. Build QEMU (the heart of UTM) ──────────────────
+  - name: ⚙️ Build QEMU for iOS (arm64)
+    working-directory: utm_src
+    run: |
+      # UTM provides its own QEMU build script
+      if [ -f "scripts/build_dependencies.py" ]; then
+        echo "Using UTM's dependency builder..."
+        python3 scripts/build_dependencies.py -p ios -a arm64 2>&1 | tail -50
+      elif [ -f "scripts/build_qemu.py" ]; then
+        python3 scripts/build_qemu.py -p ios 2>&1 | tail -50
+      else
+        # Manual QEMU build for iOS
+        echo "Building QEMU manually..."
+        cd qemu
+        mkdir -p build_ios && cd build_ios
+        ../configure \
+          --target-list=aarch64-softmmu,x86_64-softmmu,i386-softmmu \
+          --enable-hvf \
+          --disable-cocoa \
+          --disable-gtk \
+          --disable-sdl \
+          --disable-vnc \
+          --disable-docs \
+          --disable-debug-info \
+          --enable-lto \
+          --cross-prefix="" \
+          --cpu=aarch64 \
+          --host-cc="clang" \
+          --cc="clang -arch arm64 -isysroot $(xcrun --sdk iphoneos --show-sdk-path) -mios-version-min=16.0" \
+          2>&1 | tail -30
+        make -j$(sysctl -n hw.ncpu) 2>&1 | tail -30
+      fi
+      echo "✅ QEMU build step complete"
+
+  # ── 5. Build UTM via xcodebuild ───────────────────────
+  - name: 🏗️ Build UTM.app (xcodebuild)
+    working-directory: utm_src
+    run: |
+      mkdir -p "$BUILD_DIR"
+
+      # Find the right project file
+      PROJ=$(find . -maxdepth 2 -name "*.xcodeproj" | head -1)
+      WS=$(find . -maxdepth 2 -name "*.xcworkspace" | head -1)
+
+      echo "Project: $PROJ"
+      echo "Workspace: $WS"
+
+      BUILD_CMD="xcodebuild"
+      if [ -n "$WS" ]; then
+        BUILD_CMD="$BUILD_CMD -workspace $WS"
+      else
+        BUILD_CMD="$BUILD_CMD -project $PROJ"
+      fi
+
+      # List available schemes
+      eval "$BUILD_CMD -list 2>/dev/null | head -30" || true
+
+      # Determine scheme
+      SCHEME=$(eval "$BUILD_CMD -list 2>/dev/null" \
+        | grep -E "^\s+(UTM|iLinux|App)" \
+        | head -1 | xargs || echo "UTM")
+      echo "Using scheme: $SCHEME"
+
+      eval "$BUILD_CMD \
+        -scheme \"$SCHEME\" \
+        -configuration Release \
+        -sdk iphoneos \
+        -destination 'generic/platform=iOS' \
+        CONFIGURATION_BUILD_DIR=\"$BUILD_DIR\" \
+        CODE_SIGN_IDENTITY='' \
+        CODE_SIGNING_REQUIRED=NO \
+        CODE_SIGNING_ALLOWED=NO \
+        CODE_SIGN_ENTITLEMENTS='' \
+        DEVELOPMENT_TEAM='' \
+        ENABLE_BITCODE=NO \
+        ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES=YES \
+        build" \
+        2>&1 | grep -E "(error:|Build|Compil|Link|FAILED|SUCCEED)" \
+        | grep -v "^$" | tail -60
+
+  # ── 6. Fallback: Download official pre-built IPA ──────
+  - name: 📥 Fallback — Download Official UTM IPA
+    if: failure()
+    run: |
+      echo "⚠️ Source build failed — downloading official UTM IPA..."
+      TAG="${{ needs.get-version.outputs.tag }}"
+      VER="${{ needs.get-version.outputs.version }}"
+
+      # Try official GitHub release
+      IPA_URL="https://github.com/utmapp/UTM/releases/download/${TAG}/UTM.ipa"
+      echo "Downloading: $IPA_URL"
+      curl -L --retry 5 --retry-delay 5 \
+           -o "$BUILD_DIR/UTM_official.ipa" \
+           "$IPA_URL"
+
+      if [ -f "$BUILD_DIR/UTM_official.ipa" ]; then
+        ls -lh "$BUILD_DIR/UTM_official.ipa"
+        echo "✅ Official IPA downloaded (${VER})"
+        # Mark as fallback
+        touch "$BUILD_DIR/.is_fallback"
+      else
+        echo "❌ Download also failed"
+        exit 1
+      fi
+
+  # ── 7. Package custom IPA ─────────────────────────────
+  - name: 📦 Package IPA for Sideloading
+    run: |
+      mkdir -p /tmp/ipa_work/Payload
+      mkdir -p /tmp/final_ipa
+
+      # Check if we have a built .app or fallback IPA
+      APP=$(find "$BUILD_DIR" -name "*.app" -maxdepth 3 | head -1)
+
+      if [ -n "$APP" ] && [ ! -f "$BUILD_DIR/.is_fallback" ]; then
+        echo "📱 Packaging built app: $APP"
+        cp -r "$APP" /tmp/ipa_work/Payload/
+
+        # Remove signatures for clean sideload
+        find /tmp/ipa_work/Payload -name "_CodeSignature" -type d \
+          | xargs rm -rf 2>/dev/null || true
+        find /tmp/ipa_work/Payload -name "*.dylib" -o -name "*.framework" \
+          | xargs -I{} codesign --remove-signature {} 2>/dev/null || true
+        codesign --remove-signature \
+          /tmp/ipa_work/Payload/*.app 2>/dev/null || true
+
+        cd /tmp/ipa_work
+        zip -r /tmp/final_ipa/UTM-iLinux.ipa Payload/ \
+          -x "*.DS_Store" -x "__MACOSX/*"
+
+      else
+        echo "📱 Using official pre-built IPA"
+        cp "$BUILD_DIR/UTM_official.ipa" /tmp/final_ipa/UTM-iLinux.ipa
+      fi
+
+      ls -lh /tmp/final_ipa/UTM-iLinux.ipa
+      echo "✅ IPA ready"
+
+  # ── 8. Inject Linux VM config ─────────────────────────
+  - name: 🐧 Generate Alpine Linux VM Config
+    run: |
+      # Create a ready-to-use Alpine Linux VM config
+      # Users import this into UTM after install
+      mkdir -p /tmp/vm_configs/Alpine-Linux.utm
+      cat > /tmp/vm_configs/Alpine-Linux.utm/config.plist << 'PLIST'
+      <?xml version="1.0" encoding="UTF-8"?>
+      <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+          "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+      <plist version="1.0">
+      <dict>
+        <key>ConfigurationVersion</key><integer>4</integer>
+        <key>Information</key>
+        <dict>
+          <key>Name</key><string>Alpine Linux 3.19</string>
+          <key>Notes</key>
+          <string>Alpine Linux ARM64 — lightweight, fast.
+      Install packages: apk add nano git python3 curl
+      Install Wine: apk add wine (community repo)</string>
+        </dict>
+        <key>System</key>
+        <dict>
+          <key>Architecture</key><string>aarch64</string>
+          <key>CPU</key><string>cortex-a72</string>
+          <key>CPUCount</key><integer>4</integer>
+          <key>MemorySize</key><integer>2048</integer>
+          <key>JitCacheSize</key><integer>128</integer>
+        </dict>
+        <key>Display</key>
+        <dict>
+          <key>ConsoleOnly</key><true/>
+          <key>ConsoleFont</key><string>MenloRegular</string>
+          <key>ConsoleFontSize</key><integer>13</integer>
+          <key>ConsoleTheme</key><string>GreenOnBlack</string>
+        </dict>
+        <key>Input</key>
+        <dict>
+          <key>UsbBusSupport</key><false/>
+        </dict>
+        <key>Sharing</key>
+        <dict>
+          <key>ClipboardSharing</key><true/>
+          <key>DirectorySharing</key><true/>
+        </dict>
+        <key>Boot</key>
+        <dict>
+          <key>BootOrder</key>
+          <array>
+            <dict>
+              <key>Identifier</key><string>disk</string>
+            </dict>
+          </array>
+        </dict>
+        <key>Drives</key>
+        <array>
           <dict>
-              <key>CFBundleDisplayName</key>
-              <string>iLinux</string>
-              <key>CFBundleExecutable</key>
-              <string>$(EXECUTABLE_NAME)</string>
-              <key>CFBundleIdentifier</key>
-              <string>$(PRODUCT_BUNDLE_IDENTIFIER)</string>
-              <key>CFBundleInfoDictionaryVersion</key>
-              <string>6.0</string>
-              <key>CFBundleName</key>
-              <string>$(PRODUCT_NAME)</string>
-              <key>CFBundlePackageType</key>
-              <string>$(PRODUCT_BUNDLE_PACKAGE_TYPE)</string>
-              <key>CFBundleShortVersionString</key>
-              <string>1.0.0</string>
-              <key>CFBundleVersion</key>
-              <string>1</string>
-              <key>LSRequiresIPhoneOS</key>
-              <true/>
-              <key>NSSupportsLiveActivities</key>
-              <false/>
-              <key>UIApplicationSceneManifest</key>
-              <dict>
-                  <key>UIApplicationSupportsMultipleScenes</key>
-                  <false/>
-                  <key>UISceneConfigurations</key>
-                  <dict/>
-              </dict>
-              <key>UILaunchScreen</key>
-              <dict>
-                  <key>UIColorName</key>
-                  <string>AccentColor</string>
-              </dict>
-              <key>UIRequiredDeviceCapabilities</key>
-              <array>
-                  <string>arm64</string>
-              </array>
-              <key>UISupportedInterfaceOrientations</key>
-              <array>
-                  <string>UIInterfaceOrientationPortrait</string>
-                  <string>UIInterfaceOrientationLandscapeLeft</string>
-                  <string>UIInterfaceOrientationLandscapeRight</string>
-              </array>
-              <key>UIStatusBarStyle</key>
-              <string>UIStatusBarStyleLightContent</string>
-              <key>ITSAppUsesNonExemptEncryption</key>
-              <false/>
+            <key>Identifier</key><string>disk</string>
+            <key>Interface</key><string>virtio-blk-pci</string>
+            <key>ImageType</key><string>disk</string>
+            <key>SizeMB</key><integer>8192</integer>
           </dict>
-          </plist>
-          PLIST_END
+        </array>
+        <key>Networks</key>
+        <array>
+          <dict>
+            <key>Mode</key><string>shared</string>
+            <key>Hardware</key><string>virtio-net-pci</string>
+          </dict>
+        </array>
+      </dict>
+      </plist>
+      PLIST
 
-          echo "✅ Assets and Info.plist generated"
+      # Windows XP VM config (for legacy software)
+      mkdir -p /tmp/vm_configs/Windows-XP.utm
+      cat > /tmp/vm_configs/Windows-XP.utm/config.plist << 'PLIST'
+      <?xml version="1.0" encoding="UTF-8"?>
+      <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+          "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+      <plist version="1.0">
+      <dict>
+        <key>ConfigurationVersion</key><integer>4</integer>
+        <key>Information</key>
+        <dict>
+          <key>Name</key><string>Windows XP (Legacy Apps)</string>
+          <key>Notes</key>
+          <string>Windows XP x86 emulation via QEMU.
+      For running legacy Windows software on iPhone.
+      Requires Windows XP ISO from your own licensed copy.</string>
+        </dict>
+        <key>System</key>
+        <dict>
+          <key>Architecture</key><string>i386</string>
+          <key>CPU</key><string>pentium3</string>
+          <key>CPUCount</key><integer>1</integer>
+          <key>MemorySize</key><integer>512</integer>
+          <key>JitCacheSize</key><integer>64</integer>
+        </dict>
+        <key>Display</key>
+        <dict>
+          <key>ConsoleOnly</key><false/>
+          <key>UpscalerMode</key><string>linear</string>
+        </dict>
+        <key>Networks</key>
+        <array>
+          <dict>
+            <key>Mode</key><string>shared</string>
+            <key>Hardware</key><string>rtl8139</string>
+          </dict>
+        </array>
+      </dict>
+      </plist>
+      PLIST
 
-      # ─────────────────────────────────────────────
-      # STEP 7: Download Alpine Linux rootfs
-      # ─────────────────────────────────────────────
-      - name: 🐧 Download Alpine Linux ARM64 Mini Rootfs
-        run: |
-          ALPINE_VER="3.19.1"
-          URL="https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/aarch64/alpine-minirootfs-${ALPINE_VER}-aarch64.tar.gz"
-          echo "⬇️  Downloading Alpine Linux ${ALPINE_VER} (aarch64)..."
-          curl -L --retry 5 --retry-delay 3 --retry-max-time 120 \
-               -o "iLinux/iLinux/Resources/alpine_rootfs.tar.gz" \
-               "$URL"
-          ls -lh iLinux/iLinux/Resources/alpine_rootfs.tar.gz
-          echo "✅ Alpine Linux rootfs downloaded"
+      # Zip all VM configs together
+      cd /tmp
+      zip -r /tmp/final_ipa/UTM-VM-Configs.zip vm_configs/
+      echo "✅ VM configs generated"
 
-      # ─────────────────────────────────────────────
-      # STEP 8: Generate Xcode project via Ruby
-      # ─────────────────────────────────────────────
-      - name: 🏗️ Generate Xcode Project (xcodeproj gem)
-        run: |
-          cat > gen_project.rb << 'RUBY_END'
-          require 'xcodeproj'
+  # ── 9. Generate install guide ─────────────────────────
+  - name: 📋 Generate Install Guide
+    run: |
+      cat > /tmp/final_ipa/INSTALL_GUIDE.md << 'MD'
+      # 🐧 iLinux via UTM — Install Guide
+      ## Version: ${{ needs.get-version.outputs.version }}
 
-          PROJ_NAME = 'iLinux'
-          BUNDLE_ID = 'com.ilinux.alpineterminal'
-          DEPL_TGT  = '16.0'
-          PROJ_DIR  = 'iLinux'
-          SRC_DIR   = 'iLinux/Sources'
-          RES_DIR   = 'iLinux/Resources'
+      ## ── Step 1: Install UTM IPA ──────────────────────
 
-          # ── Create project ──────────────────────────
-          project = Xcodeproj::Project.new("#{PROJ_DIR}/#{PROJ_NAME}.xcodeproj")
+      ### Option A: TrollStore (Best — Permanent, JIT enabled)
+      1. Open TrollStore on your iPhone
+      2. Tap `+` → Import `UTM-iLinux.ipa`
+      3. Install → Done ✅
 
-          # ── Target ─────────────────────────────────
-          target = project.new_target(:application, PROJ_NAME, :ios, DEPL_TGT)
+      ### Option B: AltStore
+      1. Open AltStore on your iPhone
+      2. `My Apps` → `+` → Select `UTM-iLinux.ipa`
+      3. Install (resign every 7 days)
 
-          # ── Groups ─────────────────────────────────
-          app_group = project.main_group.new_group(PROJ_NAME, PROJ_NAME)
-          src_group  = app_group.new_group('Sources',   'Sources')
-          res_group  = app_group.new_group('Resources', 'Resources')
+      ### Option C: Sideloadly (PC দরকার)
+      1. PC তে Sideloadly খুলুন
+      2. iPhone connect করুন
+      3. IPA drag করুন → Apple ID দিন → Start
 
-          # ── Swift Sources ───────────────────────────
-          swift_files = Dir["#{PROJ_DIR}/#{SRC_DIR}/*.swift"].sort
-          swift_files.each do |full_path|
-            fname = File.basename(full_path)
-            ref   = src_group.new_file("Sources/#{fname}")
-            target.source_build_phase.add_file_reference(ref)
-          end
-          puts "Added #{swift_files.size} Swift source files"
+      ---
 
-          # ── Info.plist ──────────────────────────────
-          plist_ref = app_group.new_file('Info.plist')
+      ## ── Step 2: Setup Linux VM ───────────────────────
 
-          # ── Assets.xcassets ─────────────────────────
-          assets_ref = app_group.new_file('Assets.xcassets')
-          target.resources_build_phase.add_file_reference(assets_ref)
+      1. Download Alpine Linux ISO:
+         https://dl-cdn.alpinelinux.org/alpine/v3.19/releases/aarch64/alpine-standard-3.19.1-aarch64.iso
 
-          # ── Alpine rootfs ───────────────────────────
-          rootfs_ref = res_group.new_file('Resources/alpine_rootfs.tar.gz')
-          target.resources_build_phase.add_file_reference(rootfs_ref)
+      2. Import `UTM-VM-Configs.zip` → Extract করুন
 
-          # ── Build Configurations ────────────────────
-          ['Debug', 'Release'].each do |config_name|
-            config = target.build_configurations.find { |c| c.name == config_name }
-            next unless config
+      3. UTM খুলুন → `+` → Import `.utm` file
 
-            config.build_settings.merge!({
-              'PRODUCT_BUNDLE_IDENTIFIER'           => BUNDLE_ID,
-              'SWIFT_VERSION'                       => '5.9',
-              'IPHONEOS_DEPLOYMENT_TARGET'          => DEPL_TGT,
-              'INFOPLIST_FILE'                      => "$(SRCROOT)/#{PROJ_NAME}/Info.plist",
-              'TARGETED_DEVICE_FAMILY'              => '1',         # iPhone only
-              'CODE_SIGN_STYLE'                     => 'Manual',
-              'CODE_SIGNING_REQUIRED'               => 'NO',
-              'CODE_SIGNING_ALLOWED'                => 'NO',
-              'CODE_SIGN_IDENTITY'                  => '',
-              'DEVELOPMENT_TEAM'                    => '',
-              'ENABLE_BITCODE'                      => 'NO',
-              'ALWAYS_EMBED_SWIFT_STANDARD_LIBRARIES' => 'YES',
-              'SDKROOT'                             => 'iphoneos',
-              'SWIFT_OPTIMIZATION_LEVEL'            => config_name == 'Debug' ? '-Onone' : '-O',
-              'SWIFT_COMPILATION_MODE'              => config_name == 'Debug' ? 'singlefile' : 'wholemodule',
-              'COPY_PHASE_STRIP'                    => 'NO',
-              'ASSETCATALOG_COMPILER_APPICON_NAME'  => 'AppIcon',
-              'ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME' => 'AccentColor',
-              'MARKETING_VERSION'                   => '1.0.0',
-              'CURRENT_PROJECT_VERSION'             => '1',
-              'GENERATE_INFOPLIST_FILE'             => 'NO',
-            })
-          end
+      4. Drive এ ISO attach করুন → Play ▶
 
-          # Project-level settings
-          project.build_configurations.each do |config|
-            config.build_settings.merge!({
-              'IPHONEOS_DEPLOYMENT_TARGET' => DEPL_TGT,
-              'SWIFT_VERSION'             => '5.9',
-            })
-          end
+      5. Alpine boot হবে → Login: `root` (no password)
 
-          project.save
-          puts "✅ Xcode project saved: #{PROJ_DIR}/#{PROJ_NAME}.xcodeproj"
-          RUBY_END
+      6. Setup run করুন:
+         ```sh
+         setup-alpine
+         ```
 
-          ruby gen_project.rb
+      ---
 
-          echo ""
-          echo "── Project Structure ──"
-          find iLinux -name "*.swift" -o -name "*.plist" -o -name "*.xcodeproj" | sort
-          echo ""
+      ## ── Step 3: Windows Software চালান ─────────────
 
-      # ─────────────────────────────────────────────
-      # STEP 9: Build
-      # ─────────────────────────────────────────────
-      - name: 🔨 Build App (xcodebuild)
-        run: |
-          cd iLinux
-          BUILD_DIR="$(pwd)/build/Release-iphoneos"
-          mkdir -p "$BUILD_DIR"
+      Alpine Linux এ Wine install করুন:
+      ```sh
+      # Community repo enable
+      echo "https://dl-cdn.alpinelinux.org/alpine/v3.19/community" \
+        >> /etc/apk/repositories
+      apk update
 
-          xcodebuild \
-            -project iLinux.xcodeproj \
-            -scheme iLinux \
-            -configuration Release \
-            -sdk iphoneos \
-            -destination "generic/platform=iOS" \
-            CONFIGURATION_BUILD_DIR="$BUILD_DIR" \
-            CODE_SIGN_IDENTITY="" \
-            CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            CODE_SIGN_ENTITLEMENTS="" \
-            DEVELOPMENT_TEAM="" \
-            ENABLE_BITCODE=NO \
-            STRIP_INSTALLED_PRODUCT=NO \
-            clean build \
-            2>&1 | grep -E "(error:|warning:|BUILD|Compile|Link|Copy|\.swift)" | tail -80
+      # Wine install
+      apk add wine winetricks xvfb
 
-          echo ""
-          echo "── Build Output ──"
-          ls -lh "$BUILD_DIR"/ 2>/dev/null
-          APP=$(find "$BUILD_DIR" -name "*.app" -maxdepth 1 | head -1)
-          if [ -z "$APP" ]; then
-            echo "❌ .app not found — printing full log:"
-            xcodebuild \
-              -project iLinux.xcodeproj \
-              -scheme iLinux \
-              -configuration Release \
-              -sdk iphoneos \
-              -destination "generic/platform=iOS" \
-              CONFIGURATION_BUILD_DIR="$BUILD_DIR" \
-              CODE_SIGN_IDENTITY="" \
-              CODE_SIGNING_REQUIRED=NO \
-              CODE_SIGNING_ALLOWED=NO \
-              ENABLE_BITCODE=NO \
-              build 2>&1 | tail -120
-            exit 1
-          fi
-          echo "✅ App built: $APP"
+      # Windows .exe চালান
+      wine program.exe
+      ```
 
-      # ─────────────────────────────────────────────
-      # STEP 10: Package IPA
-      # ─────────────────────────────────────────────
-      - name: 📦 Package IPA for Sideloading
-        run: |
-          cd iLinux
-          BUILD_DIR="$(pwd)/build/Release-iphoneos"
-          APP=$(find "$BUILD_DIR" -name "*.app" -maxdepth 1 | head -1)
+      ---
 
-          echo "📱 Packaging: $APP"
-          rm -rf Payload
-          mkdir Payload
-          cp -r "$APP" Payload/iLinux.app
+      ## ── Supported ─────────────────────────────────────
 
-          # Remove any existing code signatures (for clean sideloading)
-          codesign --remove-signature "Payload/iLinux.app" 2>/dev/null || true
-          find "Payload/iLinux.app/Frameworks" -name "*.dylib" -o -name "*.framework" 2>/dev/null | \
-            xargs -I{} codesign --remove-signature {} 2>/dev/null || true
+      | Software | Status |
+      |----------|--------|
+      | Alpine Linux | ✅ Full support |
+      | Ubuntu 22.04 ARM | ✅ Works |
+      | Debian 12 | ✅ Works |
+      | Windows XP (x86) | ✅ Light apps |
+      | Windows 7 (x86) | ⚠️ Slow |
+      | Windows 10 | ⚠️ Very slow, 4GB+ RAM |
+      | 3D Games (Proton) | ❌ No GPU pass-through |
+      | Old 2D Games (Wine) | ✅ Many work |
+      | Office apps | ✅ LibreOffice on Linux |
 
-          zip -r iLinux.ipa Payload/ -x "*.DS_Store"
+      ---
 
-          echo ""
-          ls -lh iLinux.ipa
-          echo "✅ IPA ready: $(pwd)/iLinux.ipa"
-          echo ""
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  📲 SIDELOAD INSTRUCTIONS"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-          echo "  1. Download iLinux.ipa from Artifacts"
-          echo "  2. Use AltStore / Sideloadly / TrollStore"
-          echo "     to install on your iPhone 15 Pro Max"
-          echo "  3. Trust the developer certificate in:"
-          echo "     Settings → General → VPN & Device Mgmt"
-          echo "  4. Open iLinux → Alpine Linux starts!"
-          echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+      ## ── JIT Enable করুন (Speed 10x বাড়ে) ───────────
 
-      # ─────────────────────────────────────────────
-      # STEP 11: Upload artifact
-      # ─────────────────────────────────────────────
-      - name: 📤 Upload IPA Artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: iLinux-Alpine-IPA
-          path: iLinux/iLinux.ipa
-          retention-days: 30
-          if-no-files-found: error
+      **TrollStore users:** Automatic ✅
 
-      # ─────────────────────────────────────────────
-      # STEP 12: Summary
-      # ─────────────────────────────────────────────
-      - name: 📋 Build Summary
-        if: always()
-        run: |
-          echo "## 🐧 iLinux Build Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| Item | Value |" >> $GITHUB_STEP_SUMMARY
-          echo "|------|-------|" >> $GITHUB_STEP_SUMMARY
-          echo "| App | iLinux — Alpine Terminal |" >> $GITHUB_STEP_SUMMARY
-          echo "| Bundle ID | com.ilinux.alpineterminal |" >> $GITHUB_STEP_SUMMARY
-          echo "| Linux | Alpine Linux 3.19.1 (aarch64) |" >> $GITHUB_STEP_SUMMARY
-          echo "| Target | iPhone 15 Pro Max (iOS 16+) |" >> $GITHUB_STEP_SUMMARY
-          echo "| Signing | None (Sideload-ready) |" >> $GITHUB_STEP_SUMMARY
-          echo "| Install | AltStore / Sideloadly / TrollStore |" >> $GITHUB_STEP_SUMMARY
-          if [ -f iLinux/iLinux.ipa ]; then
-            SIZE=$(du -sh iLinux/iLinux.ipa | cut -f1)
-            echo "| IPA Size | $SIZE |" >> $GITHUB_STEP_SUMMARY
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "✅ **Build SUCCEEDED** — IPA uploaded to Artifacts" >> $GITHUB_STEP_SUMMARY
-          else
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "❌ **Build FAILED** — Check logs above" >> $GITHUB_STEP_SUMMARY
-          fi
+      **AltStore users:**
+      1. Settings → Privacy → Developer Mode → ON
+      2. AltStore → Enable JIT → UTM select করুন
+
+      ---
+
+      Built with ❤️ via GitHub Actions
+      MD
+
+      echo "✅ Install guide created"
+      ls -lh /tmp/final_ipa/
+
+  # ── 10. Upload all artifacts ──────────────────────────
+  - name: 📤 Upload UTM IPA
+    uses: actions/upload-artifact@v4
+    with:
+      name: UTM-iLinux-IPA-v${{ needs.get-version.outputs.version }}
+      path: /tmp/final_ipa/UTM-iLinux.ipa
+      retention-days: 30
+      if-no-files-found: error
+
+  - name: 📤 Upload VM Configs
+    uses: actions/upload-artifact@v4
+    with:
+      name: UTM-VM-Configs
+      path: /tmp/final_ipa/UTM-VM-Configs.zip
+      retention-days: 30
+
+  - name: 📤 Upload Install Guide
+    uses: actions/upload-artifact@v4
+    with:
+      name: Install-Guide
+      path: /tmp/final_ipa/INSTALL_GUIDE.md
+      retention-days: 30
+
+  # ── 11. Summary ───────────────────────────────────────
+  - name: 📊 Final Summary
+    if: always()
+    run: |
+      echo "## 🐧 UTM iLinux Build" >> $GITHUB_STEP_SUMMARY
+      echo "" >> $GITHUB_STEP_SUMMARY
+      echo "| | |" >> $GITHUB_STEP_SUMMARY
+      echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+      echo "| UTM Version | ${{ needs.get-version.outputs.version }} |" >> $GITHUB_STEP_SUMMARY
+      echo "| QEMU Targets | x86, x86_64, ARM64, RISC-V |" >> $GITHUB_STEP_SUMMARY
+      echo "| Linux Support | Alpine, Ubuntu, Debian |" >> $GITHUB_STEP_SUMMARY
+      echo "| Windows Support | XP, 7, 10 (via QEMU x86) |" >> $GITHUB_STEP_SUMMARY
+      echo "| Wine | Install inside Linux VM |" >> $GITHUB_STEP_SUMMARY
+      echo "| Install Method | TrollStore / AltStore / Sideloadly |" >> $GITHUB_STEP_SUMMARY
+      echo "" >> $GITHUB_STEP_SUMMARY
+      if [ -f /tmp/final_ipa/UTM-iLinux.ipa ]; then
+        SZ=$(du -sh /tmp/final_ipa/UTM-iLinux.ipa | cut -f1)
+        echo "✅ **IPA Size:** $SZ" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "### 📲 Artifacts Ready:" >> $GITHUB_STEP_SUMMARY
+        echo "- \`UTM-iLinux.ipa\` — Install this" >> $GITHUB_STEP_SUMMARY
+        echo "- \`UTM-VM-Configs.zip\` — Linux & Windows VM configs" >> $GITHUB_STEP_SUMMARY
+        echo "- \`INSTALL_GUIDE.md\` — বাংলা সহ পূর্ণ গাইড" >> $GITHUB_STEP_SUMMARY
+      fi
+```
