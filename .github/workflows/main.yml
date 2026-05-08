@@ -1,4 +1,4 @@
-name: Build Linux IPA (iSH-based)
+name: Build Linux IPA (iSH)
 
 on:
   workflow_dispatch:
@@ -10,42 +10,35 @@ jobs:
     runs-on: macos-latest
 
     steps:
-      - name: Checkout code
+      - name: Checkout iSH with submodules
         uses: actions/checkout@v4
         with:
-          submodules: recursive
+          submodules: recursive   # খুব জরুরি!
 
       - name: Setup Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: '16'
+          xcode-version: '16.0'   # অথবা latest
 
-      - name: Install build dependencies
+      - name: Install dependencies
         run: |
-          brew install meson ninja libarchive cmake pkg-config
+          brew install meson ninja libarchive
 
-      - name: Prepare Alpine Linux filesystem
+      - name: Prepare Alpine rootfs (optional pre-bundle)
         run: |
-          mkdir -p alpine_fs
-          curl -L -o alpine-minirootfs.tar.gz \
+          mkdir -p $RUNNER_TEMP/alpine_fs
+          curl -L -o alpine.tar.gz \
             https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.3-x86_64.tar.gz
-          
-          # Extract to fake filesystem for iSH
-          sudo tar -xzf alpine-minirootfs.tar.gz -C alpine_fs
-          echo "Alpine FS prepared"
+          sudo tar -xzf alpine.tar.gz -C $RUNNER_TEMP/alpine_fs
+          echo "✅ Alpine FS prepared"
 
-      - name: Build iSH
+      - name: Build & Archive with Xcode
         run: |
-          # যদি তোমার প্রজেক্টে meson build সেটআপ থাকে
-          meson setup build --buildtype=release \
-            -Dbuild-for=iphoneos \
-            --prefix=/usr/local
-          
-          meson compile -C build
-          meson install -C build
+          # iSH প্রজেক্টের নিজস্ব স্ক্রিপ্ট চালানোর চেষ্টা
+          if [ -f "scripts/build.sh" ] || [ -f "xcode-meson.sh" ]; then
+            echo "Custom build script found"
+          fi
 
-      - name: Xcode Archive & Export IPA
-        run: |
           xcodebuild clean archive \
             -project iSH.xcodeproj \
             -scheme iSH \
@@ -54,15 +47,19 @@ jobs:
             -configuration Release \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            GCC_GENERATE_DEBUGGING_SYMBOLS=NO
 
+      - name: Export IPA
+        run: |
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/iSH.xcarchive" \
             -exportOptionsPlist ExportOptions.plist \
-            -exportPath "$RUNNER_TEMP/output"
+            -exportPath "$RUNNER_TEMP/output" \
+            -allowProvisioningUpdates
 
-      - name: Upload IPA Artifact
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Linux-iPhone-IPA
+          name: iSH-Linux-IPA
           path: ${{ runner.temp }}/output/*.ipa
