@@ -1,52 +1,56 @@
-name: Build Linux Emulator IPA for iOS
+name: Build Pro Linux Emulator IPA
 on:
   workflow_dispatch:
 
 jobs:
   build:
-    runs-on: macos-latest
+    runs-on: macos-14 # লেটেস্ট ম্যাক ওএস রানার
     steps:
-      - name: Checkout Code
+      - name: Checkout UTM Source
         uses: actions/checkout@v4
         with:
           repository: 'utmapp/UTM'
           submodules: recursive
+          fetch-depth: 1 # দ্রুত ডাউনলোডের জন্য
 
-      - name: Cache Homebrew
+      - name: Install System Dependencies
+        run: |
+          brew install bison pkg-config glib pixman gettext
+          echo "/usr/local/opt/bison/bin" >> $GITHUB_PATH
+
+      - name: Cache Build Assets
         uses: actions/cache@v3
         with:
           path: |
-            ~/Library/Caches/Homebrew
-            /usr/local/Homebrew
-          key: ${{ runner.os }}-homebrew
+            build/
+            sysroot/
+          key: ${{ runner.os }}-utm-v1
 
-      - name: Install Dependencies
+      - name: Pre-build Configuration
         run: |
-          brew install bison pkg-config glib pixman gettext
+          # JIT এবং সাইডলোডিং অপ্টিমাইজেশান
+          ./scripts/build_dependencies.sh -a arm64
 
-      - name: Setup Signing
-        run: |
-          # এখানে সিগনিং সার্টিফিকেট ছাড়াই বিল্ড করার কমান্ড দেওয়া হয়েছে
-          # জেলব্রেক বা ট্রলস্টোর ইউজারদের জন্য এটি কাজ করবে
-          echo "No signing identity specified, building for ad-hoc/TrollStore"
-
-      - name: Build IPA
+      - name: Build and Archive
         run: |
           xcodebuild archive \
             -archivePath build/UTM.xcarchive \
             -scheme UTM \
             -sdk iphoneos \
             -configuration Release \
-            CODE_SIGNING_ALLOWED=NO
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            ENTITLEMENTS_DESTINATION=yes
 
-      - name: Export IPA
+      - name: Create Satisfaction IPA
         run: |
           mkdir -p Payload
           cp -r build/UTM.xcarchive/Products/Applications/UTM.app Payload/
-          zip -r LinuxEmulator.ipa Payload
-
-      - name: Upload Result
+          # আইকন এবং মেটাডেটা ঠিক রাখার জন্য জিপিং
+          zip -r9 LinuxPro.ipa Payload
+          
+      - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: Linux-Emulator-IPA
-          path: LinuxEmulator.ipa
+          name: Linux-Pro-Max-Edition
+          path: LinuxPro.ipa
