@@ -1,44 +1,42 @@
-name: Build Linux IPA (iSH)
+name: Build iSH Linux IPA
 
 on:
   workflow_dispatch:
-  push:
-    branches: [ main ]
 
 jobs:
   build:
     runs-on: macos-latest
 
     steps:
-      - name: Checkout iSH with submodules
+      - name: Checkout iSH Repository
         uses: actions/checkout@v4
         with:
-          submodules: recursive   # খুব জরুরি!
+          repository: ish-app/ish          # অথবা তোমার ফর্ক করা username/ish
+          submodules: recursive
+          fetch-depth: 0
+
+      - name: Verify Project Files
+        run: |
+          ls -la
+          echo "✅ iSH.xcodeproj exists: $(ls iSH.xcodeproj 2>/dev/null && echo Yes || echo No)"
 
       - name: Setup Xcode
         uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: '16.0'   # অথবা latest
+          xcode-version: '16.0'
 
-      - name: Install dependencies
-        run: |
-          brew install meson ninja libarchive
+      - name: Install Dependencies
+        run: brew install meson ninja libarchive
 
-      - name: Prepare Alpine rootfs (optional pre-bundle)
+      - name: Prepare Alpine rootfs
         run: |
-          mkdir -p $RUNNER_TEMP/alpine_fs
-          curl -L -o alpine.tar.gz \
+          mkdir -p $RUNNER_TEMP/alpine
+          curl -L -o /tmp/alpine.tar.gz \
             https://dl-cdn.alpinelinux.org/alpine/v3.20/releases/x86_64/alpine-minirootfs-3.20.3-x86_64.tar.gz
-          sudo tar -xzf alpine.tar.gz -C $RUNNER_TEMP/alpine_fs
-          echo "✅ Alpine FS prepared"
+          sudo tar -xzf /tmp/alpine.tar.gz -C $RUNNER_TEMP/alpine
 
-      - name: Build & Archive with Xcode
+      - name: Build & Archive IPA
         run: |
-          # iSH প্রজেক্টের নিজস্ব স্ক্রিপ্ট চালানোর চেষ্টা
-          if [ -f "scripts/build.sh" ] || [ -f "xcode-meson.sh" ]; then
-            echo "Custom build script found"
-          fi
-
           xcodebuild clean archive \
             -project iSH.xcodeproj \
             -scheme iSH \
@@ -47,16 +45,14 @@ jobs:
             -configuration Release \
             CODE_SIGN_IDENTITY="" \
             CODE_SIGNING_REQUIRED=NO \
-            CODE_SIGNING_ALLOWED=NO \
-            GCC_GENERATE_DEBUGGING_SYMBOLS=NO
+            CODE_SIGNING_ALLOWED=NO
 
       - name: Export IPA
         run: |
           xcodebuild -exportArchive \
             -archivePath "$RUNNER_TEMP/iSH.xcarchive" \
             -exportOptionsPlist ExportOptions.plist \
-            -exportPath "$RUNNER_TEMP/output" \
-            -allowProvisioningUpdates
+            -exportPath "$RUNNER_TEMP/output"
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
